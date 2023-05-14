@@ -152,13 +152,8 @@ void Server::handleClientReq(Client& client, int i)
 	memset(buffer_arr, 0, RECV_BUF);
 	int		recv_len = 0;
 	
-	// std::cout << client.getPollFd().fd << std::endl;
-	// std::cout << this->_clients[i - 1].getPollFd().fd << std::endl;
-	// recv_len = recv(this->_pollFds[i].fd, &buffer_arr, RECV_BUF, 0);
-	recv_len = recv(client.getPollFd().fd, &buffer_arr, RECV_BUF, 0);
-
-	// std::cout << this->_pollFds[i].fd << std::endl;
-
+	recv_len = recv(this->_pollFds[i].fd.getPollFd().fd, &buffer_arr, RECV_BUF, 0);
+	
 	if (recv_len <= 0)
 		this->handleReqQuit(i);
 
@@ -167,14 +162,14 @@ void Server::handleClientReq(Client& client, int i)
 		std::istringstream iss(buffer_arr);
 		std::string buffer_str;
 		while (std::getline(iss, buffer_str, '\n'))
-			client.getCmdQueue().push_back(buffer_str);
+			this->_pollFds[i].fd.getCmdQueue().push_back(buffer_str);
 
-		for (std::vector<std::string>::iterator it = client.getCmdQueue().begin(); it != client.getCmdQueue().end(); ++it)
+		for (std::vector<std::string>::iterator it = this->_pollFds[i].fd.getCmdQueue().begin(); it != this->_pollFds[i].fd.getCmdQueue().end(); ++it)
 		{
 			if (!this->parseReq(*it, i))
 				return ;
 		}
-		client.getCmdQueue().clear();
+		this->_pollFds[i].fd.getCmdQueue().clear();
 	
 		memset(buffer_arr, 0, RECV_BUF);
 	}
