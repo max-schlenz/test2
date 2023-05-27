@@ -1,41 +1,16 @@
 # include "Server.hpp"
 
-void Server::handleReqHandshake(int i, std::vector<std::string> reqVec)
+void Server::handleReqHandshake(Client& client, std::vector<std::string> reqVec)
 {
-	std::string response = ":127.0.0.1 001 mschlenz :Welcome to the Internet Relay Network mschlenz!mschlenz@mschlenz\r\n";
-	send(this->_clients[i - 1].sock(), response.c_str(), response.size(), 0);
+	// std::cout << "HANDSHAKE" << std::endl;
+	// if (client.getNickname() != "default")
+	// {
+		std::string response = ":127.0.0.1 001 " + client.getNickname() + " :\002\037\0038Welcome to our dmt.irc server!\002\037\0038\r\n";
+		send(client.getSock(), response.c_str(), response.size(), 0);
+	// }
 }
 
-void Server::handleReqPing(int i, std::vector<std::string> reqVec)
-{
-	if (reqVec.size() > 1)
-	{
-		std::string response = "PONG " + reqVec[1] + "\r\n";
-		send(this->_clients[i - 1].sock(), response.c_str(), response.size(), 0);
-	}
-}
-
-void Server::handleReqNick(int i, std::vector<std::string> reqVec)
-{
-	this->_clients[i - 1].setNickname(reqVec[1]);
-	std::cout << GRAY << "NICK set to " << this->_clients[i - 1].getNickname() << std::endl;
-}
-
-void Server::handleReqUser(int i, std::vector<std::string> reqVec)
-{	
-	this->_clients[i - 1].setUsername(reqVec[1]);
-	std::cout << GRAY << "USER set to " << this->_clients[i - 1].getUsername() << std::endl;
-}
-
-void Server::handleReqMode(int i, std::vector<std::string> reqVec)
-{
-	std::cout << GRAY << "MODE received (unhandled)" << RESET << std::endl;
-}
-
-void Server::handleReqQuit(int i)
-{
-	std::cout << RED << "Client " << BRED << this->client(i - 1).ipStr() << RED << " disconnected." << RESET << std::endl;
-	this->_pollFds.erase(this->_pollFds.begin() + i);
-	this->_clients.erase(this->_clients.begin() + (i - 1));
-	close(this->_pollFds[i].fd);
-}
+//MUST NOT contain any of the following characters: space (' ', 0x20), comma (',', 0x2C), asterisk ('*', 0x2A), question mark ('?', 0x3F), exclamation mark ('!', 0x21), at sign ('@', 0x40)
+//MUST NOT start with any of the following characters: dollar ('$', 0x24), colon (':', 0x3A)
+//MUST NOT start with a character listed as a channel type prefix
+//SHOULD NOT contain any dot character ('.', 0x2E)

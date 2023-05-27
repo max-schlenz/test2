@@ -1,22 +1,53 @@
 AUTHORS			=	mschlenz, dantonik, tdehne
+MAKEFLAGS 		=	--no-print-directory
 DATE			=	$$(date +%Y/%m/%d)
 
 CXX				=	c++
 CXXFLAGS		=	-std=c++98 -MMD -g #-Wall -Wextra -Werror 
 
-NAME			=	server
-SRC_NAME		=	main exiting Server Client commands requests
-INC_NAME		=	Channel Client Server irc
+NAME			=	ircserv
+
+SRC_NAME      	=	main \
+					Server \
+					Client \
+					misc \
+					requests \
+					Channel \
+					parse \
+					print_msg \
+					commands/capreq \
+					commands/invite \
+					commands/join \
+					commands/kick \
+					commands/leave \
+					commands/mode \
+					commands/nick \
+					commands/notice \
+					commands/part \
+					commands/ping \
+					commands/privmsg \
+					commands/quit \
+					commands/topic \
+					commands/user \
+					commands/who \
+					commands/whois \
+					commands/dcc \
+					commands/pass
+
+INC_NAME		=	Channel Client Server irc common
 
 SRC_DIR			=	src/
 OBJ_DIR			=	.obj/
-INC_DIR			=	Classes/
+INC_DIR			=	include/
 
 OBJ				=	$(addsuffix .o, $(SRC))
 OBJ_FILES		=	$(addsuffix .o, $(addprefix $(OBJ_DIR), $(SRC_NAME)))
 DEP_FILES		=	$(addsuffix .d, $(addprefix $(OBJ_DIR), $(SRC_NAME)))
 SRC_FILES		=	$(addsuffix .cpp, $(addprefix $(SRC_DIR), $(SRC_NAME)))
 INC_FILES		=	$(addsuffix .hpp, $(addprefix $(INC_DIR), $(INC_NAME)))
+
+# PCH_H			= include/common.hpp
+# PCH				= $(PCH_H).gch
 
 ifeq ($(shell uname -s),Linux)
 	OS := Linux
@@ -36,18 +67,28 @@ all:
 	$(info Running on $(OS))
 
 $(NAME): $(OBJ_DIR) $(OBJ_FILES) 
-	$(CXX) $(CXXFLAGS) $(OBJ_FILES) -o $(NAME) -I$(INC_DIR)
+	$(CXX) $(CXXFLAGS) $(OBJ_FILES) -o $(NAME) -I $(INC_DIR)
 
 -include $(DEP_FILES)
 
+# $(PCH): $(PCH_H)
+# 	@mkdir -p $(OBJ_DIR)/Classes
+# 	@$(CXX) $(CXXFLAGS) -x c++-header $< -o $@
+
 $(OBJ_DIR):
 	@mkdir -p $(OBJ_DIR)
+	@mkdir -p $(OBJ_DIR)/commands
 
-$(OBJ_DIR)%.o : $(SRC_DIR)%.cpp 
-	$(CXX) $(CXXFLAGS) -c $< -I$(INC_DIR) -o $@
+# $(OBJ_DIR)%.o : $(SRC_DIR)%.cpp $(PCH)
+# 	@$(CXX) $(CXXFLAGS) -include $(PCH_H) -I $(INC_DIR) -c $< -o $@
+$(OBJ_DIR)%.o : $(SRC_DIR)%.cpp
+	@$(CXX) $(CXXFLAGS) -c $< -I$(INC_DIR) -o $@
 
 clean c:
 	@rm -rf $(OBJ_DIR)
+	@rm -rf .vscode
+	@rm -rf *.dSYM
+	@rm -rf *.gch
 
 fclean f: clean
 	@rm -rf $(NAME)

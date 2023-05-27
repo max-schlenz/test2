@@ -1,117 +1,112 @@
 # include "Server.hpp"
-# include "Client.hpp"
-# include "irc.hpp"
-# include <fcntl.h>
 
-Server::Server(int port)
+extern bool g_run;
+
+Server::Server(int port, std::string key)
 {
-	this->_proto = getprotobyname("tcp");
-	this->_sock = socket(AF_INET, SOCK_STREAM, this->_proto->p_proto);
+	// this->_channels.reserve(1024);
+	this->_clients.reserve(1024);
+	this->_pollFds.reserve(1024);
+
+	if (key != "")
+	{
+		this->_key = key;
+		this->_key_set = true;
+	}
+	else
+		this->_key_set = false;
+	// this->_proto = getprotobyname("tcp");
+	// this->_sock = socket(AF_INET, SOCK_STREAM, this->_proto->p_proto);
+	if (((this->_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0 ))
+		error_handling("[-] Error, socket invalid!");
+	std::cout << GREEN << "[+] Socket " << this->_sock << " is open through the TCP/IP protocol." << RESET << std::endl;
 	this->_port = port;
 	this->_saddr_in.sin_family = AF_INET;
 	this->_saddr_in.sin_port = htons(this->_port);
-	this->_saddr_in.sin_addr.s_addr = htonl(INADDR_ANY);
+	// this->_saddr_in.sin_addr.s_addr = htonl(INADDR_ANY);
+	this->_saddr_in.sin_addr.s_addr = inet_addr("127.0.0.1");
 	this->_saddr_in_len = sizeof(this->_saddr_in);
+	this->_hostname = inet_ntoa(this->_saddr_in.sin_addr);
+	this->_num_channels = 0;
+	this->_num_ops = 0;
+	this->_num_users = 0;
 
 	int optval = 1;
     setsockopt(this->_sock, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval , sizeof(int));
 	fcntl(this->_sock, F_SETFL, O_NONBLOCK);
-	bind(this->_sock, (struct sockaddr*)&this->_saddr_in, this->_saddr_in_len);
-	listen(this->_sock, 5);
-
+	while ((bind(this->_sock, (struct sockaddr*)&this->_saddr_in, this->_saddr_in_len)) < 0)
+	{
+		std::cout << YELLOW << "\terrno = (" << errno << ") : " << strerror(errno) << std::endl;
+		this->_saddr_in.sin_port = htons(++this->_port);
+	}
+	std::cout << GREEN << "[+] Bind successful on port " << this->_port << "!" << RESET << std::endl;
+	if ((listen(this->_sock, USR_LIMIT)) < 0)
+		error_handling("Error: listen failed!");
+	std::cout << GREEN << "[+] Socket is listening.\n" << RESET << std::endl;
 	pollfd server_poll_fd;
-    server_poll_fd.fd = this->_sock;
-    server_poll_fd.events = POLLIN;
-    this->_pollFds.push_back(server_poll_fd);
+	server_poll_fd.fd = this->_sock;
+	server_poll_fd.events = POLLIN;
+	this->_pollFds.push_back(server_poll_fd);
 	this->setCommands();
-	std::cout << "Server listening on: " << BWHITE << inet_ntoa(this->_saddr_in.sin_addr) << ":" << this->_port << RESET <<  std::endl;
+}
+
+Server::~Server()
+{
+	for (std::vector<Client>::iterator it = this->_clients.begin(); it != this->_clients.end(); ++it)
+		close((*it).getSock());
+	close(this->_sock);
 }
 
 void Server::setCommands()
 {
-	this->_commands["JOIN"] = &join;
-	this->_commands["LEAVE"] = &leave;
-	this->_commands["QUIT"] = &quit;
-	this->_commands["MSG"] = &msg;
-	this->_commands["NICK"] = &nick;
-	this->_commands["TOPIC"] = &topic;
-	this->_commands["MODE"] = &mode;
-	this->_commands["KICK"] = &kick;
-	this->_commands["INVITE"] = &invite;
+	this->_commands["JOIN"] = &Server::join;
+	this->_commands["PART"] = &Server::part;
+	this->_commands["LEAVE"] = &Server::leave;
+	this->_commands["NICK"] = &Server::nick;
+	this->_commands["TOPIC"] = &Server::topic;
+	this->_commands["MODE"] = &Server::mode;
+	this->_commands["KICK"] = &Server::kick;
+	this->_commands["invite"] = &Server::invite;   // lets pleaase make a to lower in the beginning for all ; but lc /join shouldn't work :D 
+	this->_commands["INVITE"] = &Server::invite;   // how about this? :) 
+	this->_commands["USER"] = &Server::user;
+	this->_commands["PING"] = &Server::ping;
+	this->_commands["WHOIS"] = &Server::whois;
+	this->_commands["CAP"] = &Server::capreq;
+	this->_commands["PASS"] = &Server::pass;
+	this->_commands["PRIVMSG"] = &Server::privmsg;
+	this->_commands["MSG"] = &Server::privmsg; // same as privmsg
+	this->_commands["WHO"] = &Server::who;
+	this->_commands["NOTICE"] = &Server::notice;
+
+	this->_commands["dbg"] = &Server::dbgPrint;
+	this->_commands["dcc"] = &Server::dcc;
+
+	// this->_commands["pac"] = &Server::dbgPrintAllChannels;
 }
 
-bool Server::checkCmd(std::vector<std::string> req)
+bool Server::isUserInChannel(Client &client, std::string channelName)
 {
-	std::map<std::string, void(*)(std::string)>::iterator it = this->_commands.find(req[0]);
-
-	if (it == this->_commands.end()) {
-		return (false);
-	}
-	return (true);
+	if (client.getJoinedChannels().find(channelName) != client.getJoinedChannels().end())
+		return true;
+	return false;
 }
 
-void Server::accept_client()
+void Server::sendMsgToAll(Client &client, std::string message)
 {
-	sockaddr_in	sin;
-	char*		ipStr;
-	pollfd		client_poll_fd;
-	socklen_t size = sizeof(sin);
-	int sock = accept(this->_sock, (struct sockaddr*)&sin, &size);
-	if (sock > 0)
+	for (std::map<std::string, Client*>::iterator it = this->_clientsM.begin(); it != this->_clientsM.end(); ++it)
 	{
-		getsockname(sock, (struct sockaddr*)&sin, &size);
-		ipStr = inet_ntoa(sin.sin_addr);
-
-		client_poll_fd.fd = sock;
-		client_poll_fd.events = POLLIN;
-		this->_pollFds.push_back(client_poll_fd);
-
-		// client.setPollFd(client_poll_fd);
-
-		Client client(sin, size, sock, ipStr, client_poll_fd);
-		this->_clients.push_back(client);
-
-		// std::cout << client_poll_fd.fd << std::endl;
-		// std::cout << (this->_clients.end() - 1)->getPollFd().fd << std::endl;
-		
-		std::cout << GREEN << "Client " << BGREEN << client.ipStr() << GREEN << " connected." << RESET << std::endl;
+		if (it->first != client.getNickname())
+			send(it->second->getSock(), message.c_str(), message.size(), 0);
 	}
 }
 
-void Server::startServer()
+void Server::sendResponse(Client &client, const std::string& response)
 {
-	int res = 0;
-
-	while (true)
-	{
-		try
-		{
-			res = poll(this->_pollFds.data(), this->_pollFds.size(), 1000);
-			if (res == -1)
-				throw Server::ErrorPoll();
-
-		}
-		catch(const std::exception& e)
-		{
-			std::cerr << e.what() << '\n';
-		}
-	
-		for (int i = 0; res > 0 && i < this->_pollFds.size(); i++)
-		{
-			if (this->_pollFds[i].fd == this->_sock && this->_pollFds[i].revents & POLLIN)
-				this->accept_client();
-
-			else if (this->_pollFds[i].revents & POLLIN)
-			{
-				// std::cout << "i: " << i << std::endl;
-				// std::cout << "-> " << this-_clients[i - 1].getPollFd().fd << std::endl;
-				this->handleClientReq(this->_clients[i - 1], i);
-			}
-		}
-	}
+	std::cout << PINK << response << RESET << std::flush;
+	send(client.getSock(), response.c_str(), response.size(), 0);
 }
 
-bool Server::parseReq(std::string request, int i)
+bool Server::parseReq(Client& client, std::string request)
 {
 	std::vector<std::string> reqVec;
 	std::string reqField;
@@ -120,58 +115,150 @@ bool Server::parseReq(std::string request, int i)
 	while (iss >> reqField)
 		reqVec.push_back(reqField);
 
-	if (request.find("CAP LS") != std::string::npos)
-		this->handleReqHandshake(i, reqVec);
-	
-	else if (request.find("PING") != std::string::npos)
-		this->handleReqPing(i, reqVec);
-		
-	else if (request.find("NICK") != std::string::npos)
-		this->handleReqNick(i, reqVec);
-
-	else if (request.find("USER") != std::string::npos)
-		this->handleReqUser(i, reqVec);
-	
-	else if (request.find("MODE") != std::string::npos)
-		this->handleReqMode(i, reqVec);
-	
-	else if (request.find("QUIT") != std::string::npos)
+	if (reqVec.size())
 	{
-		this->handleReqQuit(i);
-		return false;
-	}
+		std::map<std::string, void(Server::*)(std::vector<std::string> reqVec, Client& client)>::iterator it = this->_commands.find(reqVec[0]);
+		
+		if (it != this->_commands.end())
+			(this->*(it->second))(reqVec, client);
 
-	else
-		std::cout << GRAY << "not recognized: " RESET << request << std::endl;
+		else if (reqVec[0] == "QUIT")
+			return false;
+
+		else
+			std::cout << GRAY << "not recognized: " RESET << request << std::endl;
+	}
 	return true;
 }
 
-void Server::handleClientReq(Client& client, int i)
+bool Server::isValidClient(std::string name)
 {
-	char	buffer_arr[RECV_BUF];
-	memset(buffer_arr, 0, RECV_BUF);
-	int		recv_len = 0;
+	for (std::vector<Client>::iterator it = this->_clients.begin(); it != this->_clients.end(); ++it)
+	{
+		if (it->getNickname() == name)
+			return true;
+	}
+	return false;
+}
+
+// ! use isValidClient() as protection !
+Client &Server::getClientName(std::string name)
+{
+	for (std::vector<Client>::iterator it = this->_clients.begin(); it != this->_clients.end(); ++it)
+	{
+		if (it->getNickname() == name)
+			return (*it);
+	}
+	Client *err;
+	return *(err);
+}
+
+bool Server::parseReqQueue(Client& client)
+{
+	std::string req;
+	for (std::vector<std::string>::iterator it = client.getReqQueue().begin(); it != client.getReqQueue().end(); ++it)
+		req += *it;
 	
-	recv_len = recv(this->_pollFds[i].fd.getPollFd().fd, &buffer_arr, RECV_BUF, 0);
-	
+	if (!this->parseReq(client, req))
+		return false;
+
+	client.getReqQueue().clear();
+	return true;
+}
+
+bool Server::buildReqQueue(Client& client, const std::string& buffer)
+{
+	std::istringstream iss(buffer);
+	std::string buffer_str;
+
+	while (std::getline(iss, buffer_str, '\n'))
+	{
+		client.getReqQueueBuf() += buffer_str;
+		if (!iss.eof())
+		{
+			client.getReqQueue().push_back(client.getReqQueueBuf());
+			client.getReqQueueBuf().clear();
+		}
+	}
+	if (!buffer.empty() && buffer[buffer.size() - 1] == '\n')
+		return true;
+
+	return false;
+}
+
+bool Server::handleClientReq(Client& client)
+{
+	std::vector<char> buffer(RECV_BUF);
+	std::fill(buffer.begin(), buffer.end(), '\0');
+
+	int recv_len = recv(client.getPollFd().fd, buffer.data(), RECV_BUF, 0);
+
 	if (recv_len <= 0)
-		this->handleReqQuit(i);
+		return false;
 
 	else
 	{		
-		std::istringstream iss(buffer_arr);
-		std::string buffer_str;
-		while (std::getline(iss, buffer_str, '\n'))
-			this->_pollFds[i].fd.getCmdQueue().push_back(buffer_str);
+		std::string buf(buffer.begin(), buffer.begin() + recv_len);
+		
+		std::cout << BLUE << buf << RESET << std::flush;
+		if (!this->buildReqQueue(client, buf))
+			return true;
+		if (!this->parseReqQueue(client))
+			return false;
+	}
+	return true;
+}
 
-		for (std::vector<std::string>::iterator it = this->_pollFds[i].fd.getCmdQueue().begin(); it != this->_pollFds[i].fd.getCmdQueue().end(); ++it)
+void Server::acceptClient()
+{
+	sockaddr_in sin;
+	socklen_t size = sizeof(sin);
+	int sock = accept(this->_sock, (struct sockaddr*)&sin, &size);
+	if (sock > 0)
+	{
+		getsockname(sock, (struct sockaddr*)&sin, &size);
+		std::string ipStr = inet_ntoa(sin.sin_addr);
+
+		pollfd client_poll_fd;
+		client_poll_fd.fd = sock;
+		client_poll_fd.events = POLLIN;
+		this->_pollFds.push_back(client_poll_fd);
+
+		Client client(sin, sock, ipStr, client_poll_fd);
+		this->_clients.push_back(client);
+	}
+}
+
+void Server::disconnectClient(Client& client, int i)
+{
+	std::cout << RED << "Client " << BRED << this->_clients[i - 1].getHostname() << RED << " disconnected." << RESET << std::endl;
+	close(this->_pollFds[i].fd);
+	this->_clientsM.erase(this->_clients[i - 1].getNickname());
+	this->_pollFds.erase(this->_pollFds.begin() + i);
+	this->_clients.erase(this->_clients.begin() + (i - 1));
+}
+
+void Server::startServer()
+{
+	int res = 0;
+
+	if (g_run)
+		std::cout << "~~~ Server listening on: " << BWHITE << inet_ntoa(this->_saddr_in.sin_addr) << ":" << this->_port << " ~~~\n" << RESET <<  std::endl;
+		// std::cout << "Server listening on: " << BWHITE << inet_ntoa(this->_saddr_in.sin_addr) << ":" << this->_port << RESET <<  std::endl;
+	while (g_run)
+	{
+		res = poll(this->_pollFds.data(), this->_pollFds.size(), 500);
+		for (int i = 0; res > 0 && i < this->_pollFds.size(); i++)
 		{
-			if (!this->parseReq(*it, i))
-				return ;
+			if (this->_pollFds[i].fd == this->_sock && this->_pollFds[i].revents & POLLIN && this->_clients.size() < USR_LIMIT)
+				this->acceptClient();
+
+			else if (i > 0 && this->_pollFds[i].revents & POLLIN)
+			{
+				if (!this->handleClientReq(this->_clients[i - 1]) || this->_clients[i - 1].getKick())
+					this->disconnectClient(this->_clients[i - 1], i);
+			}
 		}
-		this->_pollFds[i].fd.getCmdQueue().clear();
-	
-		memset(buffer_arr, 0, RECV_BUF);
 	}
 }
 
